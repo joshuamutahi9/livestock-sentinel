@@ -12,9 +12,10 @@ and explains why.
 
 | File | Purpose |
 |---|---|
-| `simulate.py` | Simulates FMD spreading between cattle herds through local contact and animal movement across 28 real Kenyan sub-counties. Produces only the signals that would be observable in reality. |
+| `simulate.py` | Simulates FMD spreading between cattle herds through local contact and animal movement across 26 real Kenyan sub-counties. Produces only the signals that would be observable in reality. |
 | `train.py` | Builds features, trains the model (LightGBM), compares it with simple baselines on a held-out year, and creates risk scores with plain-language explanations (SHAP). |
 | `app.py` | The dashboard. |
+| `colab/sprint2_real_data.ipynb` | Downloads the real boundary and weather data. |
 | `data/` | Generated data and model outputs. |
 
 ## Run the dashboard
@@ -37,4 +38,11 @@ python train.py
 | Sprint | Dates | Goal | Delivered |
 |---|---|---|---|
 | 0 | 23 Sep 2026 | Set-up | Backlog, tools, accounts |
-| 1 | 23-25 Sep 2026 | Walking skeleton | Simulator, model and back-test, risk map, sub-county detail, model performance page |
+| 1 | 23 Sep 2026 | Walking skeleton | Simulator, model and back-test, risk map, sub-county detail, model performance page |
+| 2 | 24-25 Sep 2026 | Credible AI | Real weather (ERA5) and boundaries, 8-week drought mechanism, anomaly detection layer, data sources page |
+
+## Data sources
+
+- **Real:** constituency/sub-county boundaries from geoBoundaries (gbOpen, KEN ADM2); weekly rainfall and reference evapotranspiration 2013-2025 from ERA5 reanalysis via the Open-Meteo archive API (2013-2022 used as the normal baseline).
+- **Simulated:** cattle holdings, animals, movements, farmer and vet reports, vaccination and outbreaks.
+- Merti and Transmara East were removed because they have no separate polygon in the boundary file. Molo, Isiolo and Garbatulla use the names of the boundary polygons they sit in (Kuresoi North, Isiolo North, Isiolo South).

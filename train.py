@@ -37,13 +37,30 @@ aw["own_outbreak_8w"] = g["confirmed_outbreak"].transform(lambda s: s.shift(1).r
 aw["woy_sin"] = np.sin(2 * np.pi * (aw.week % 52) / 52)
 aw["woy_cos"] = np.cos(2 * np.pi * (aw.week % 52) / 52)
 
+# ---------- anomaly detection (separate early tripwire, not the ML model) ----------
+def ewma_z(col, span=8):
+    mu = g[col].transform(lambda x: x.shift(1).ewm(span=span, min_periods=4).mean())
+    sd = g[col].transform(lambda x: x.shift(1).ewm(span=span, min_periods=4).std())
+    return ((aw[col] - mu) / (sd.fillna(0) + 1)).fillna(0)
+aw["z_farmer"] = ewma_z("farmer_reports")
+aw["z_vet"] = ewma_z("vet_reports")
+aw["z_inbound"] = ewma_z("inbound_animals")
+flags = []
+for r in aw[["z_farmer", "z_vet", "z_inbound", "farmer_reports", "vet_reports", "inbound_change_pct"]].itertuples(index=False):
+    f = []
+    if r.z_farmer > 2 and r.farmer_reports >= 2: f.append(f"Farmer symptom reports unusually high ({int(r.farmer_reports)} this week)")
+    if r.z_vet > 2 and r.vet_reports >= 1: f.append(f"Vet-reported suspected cases unusually high ({int(r.vet_reports)} this week)")
+    if r.z_inbound > 2.5 and r.inbound_change_pct > 40: f.append(f"Cattle arrivals unusually high ({r.inbound_change_pct:+.0f}% on recent weeks)")
+    flags.append(" | ".join(f))
+aw["anomaly_flags"] = flags
+
 # target: new confirmed outbreak in weeks t+1..t+2
 aw["target"] = (g["confirmed_outbreak"].shift(-1).fillna(0) + g["confirmed_outbreak"].shift(-2).fillna(0) > 0).astype(int)
 
 FEATURES = ["farmer_reports", "farmer_reports_2w", "vet_reports", "vet_reports_2w", "report_anomaly_z",
             "inbound_animals", "inbound_change_pct", "inbound_external", "inbound_from_outbreak_areas_2w",
             "neighbour_outbreaks_4w", "own_outbreak_8w", "vacc_coverage", "weeks_since_campaign",
-            "rain_anomaly", "density_index", "market_hub", "border", "woy_sin", "woy_cos"]
+            "rain_8w_anomaly_pct", "et0_anomaly", "density_index", "market_hub", "border", "woy_sin", "woy_cos"]
 
 valid = (aw.week >= 8) & (aw.week <= aw.week.max() - 2)
 train = aw[valid & (aw.week < 104)]
@@ -93,6 +110,11 @@ for ev in events.itertuples():
     hi = win[win.score >= 70]
     if len(hi):
         caught += 1; leads.append(ev.week - hi.week.min())
+a_leads, a_caught = [], 0
+for ev in events.itertuples():
+    win = test[(test.area_id == ev.area_id) & (test.week >= ev.week - 6) & (test.week < ev.week) & (test.anomaly_flags.str.len() > 0)]
+    if len(win):
+        a_caught += 1; a_leads.append(ev.week - win.week.min())
 metrics = {
     "test_period": "Year 3 (weeks 104-155), never seen in training",
     "n_outbreaks_test": int(len(events)),
@@ -107,6 +129,10 @@ metrics = {
     "outbreaks_with_high_alert_before_confirmation": f"{caught}/{len(events)}",
     "median_lead_time_weeks": float(np.median(leads)) if leads else None,
     "mean_lead_time_weeks": float(np.mean(leads)) if leads else None,
+    "high_alerts_per_week": float((test.score >= 70).groupby(test.week).sum().mean()),
+    "anomaly_flag_before_confirmation": f"{a_caught}/{len(events)}",
+    "anomaly_median_lead_time_weeks": float(np.median(a_leads)) if a_leads else None,
+    "anomaly_flags_per_week": float((test.anomaly_flags.str.len() > 0).groupby(test.week).sum().mean()),
 }
 metrics = json.loads(json.dumps(metrics, default=float))
 (D / "model_metrics.json").write_text(json.dumps(metrics, indent=2))
@@ -132,7 +158,10 @@ def describe(f, r):
         "own_outbreak_8w": "outbreak declared here in the last 8 weeks" if r.own_outbreak_8w else "no outbreak declared here in the last 8 weeks",
         "vacc_coverage": f"vaccination coverage about {r.vacc_coverage:.0%}",
         "weeks_since_campaign": f"{int(r.weeks_since_campaign)} weeks since last vaccination campaign" if r.weeks_since_campaign < 99 else "no recent vaccination campaign",
-        "rain_anomaly": "drier than normal conditions" if r.rain_anomaly < 0 else "wetter than normal conditions",
+        "rain_8w_anomaly_pct": (f"rainfall {abs(r.rain_8w_anomaly_pct):.0f}% below normal over the last 8 weeks" if r.rain_8w_anomaly_pct < -10
+                                else f"rainfall {r.rain_8w_anomaly_pct:.0f}% above normal over the last 8 weeks" if r.rain_8w_anomaly_pct > 10
+                                else "rainfall close to normal over the last 8 weeks"),
+        "et0_anomaly": "hotter, drier air than normal (high evaporation)" if r.et0_anomaly > 0 else "cooler, less evaporative conditions than normal",
         "density_index": "high cattle density" if r.density_index >= 1.1 else "moderate cattle density",
         "market_hub": "major livestock market in the area" if r.market_hub else "no major market",
         "border": "border area with cross-border movement" if r.border else "not a border area",
@@ -153,6 +182,7 @@ test["data_confidence"] = np.where(test.reporting_prob < 0.3, "Low data", "Adequ
 
 keep = ["area_id", "week", "date", "score", "band", "data_confidence", "drivers_up", "drivers_down",
         "farmer_reports", "vet_reports", "inbound_animals", "inbound_change_pct",
-        "inbound_from_outbreak_areas_2w", "vacc_coverage", "rain_mm", "confirmed_outbreak", "target"]
+        "inbound_from_outbreak_areas_2w", "vacc_coverage", "rain_mm", "rain_8w_anomaly_pct", "anomaly_flags",
+        "confirmed_outbreak", "target"]
 test[keep].to_csv(D / "risk_scores.csv", index=False)
 print("risk_scores.csv rows:", len(test))

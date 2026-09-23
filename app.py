@@ -25,10 +25,12 @@ def load():
     risk = pd.read_csv(D / "risk_scores.csv", parse_dates=["date"]).merge(
         areas[["area_id", "county", "sub_county", "lat", "lon"]], on="area_id")
     metrics = json.loads((D / "model_metrics.json").read_text())
-    return areas, risk, metrics
+    geo = json.loads((D / "boundaries.geojson").read_text()) if (D / "boundaries.geojson").exists() else None
+    return areas, risk, metrics, geo
 
 
-areas, risk, metrics = load()
+areas, risk, metrics, geo = load()
+risk["anomaly_flags"] = risk.anomaly_flags.fillna("")
 
 st.title("Livestock Sentinel AI")
 st.caption("Early warning for foot-and-mouth disease in cattle. Prototype, sprint 1.")
@@ -46,20 +48,33 @@ now = risk[(risk.date.dt.date == week) & (risk.county.isin(counties))].copy()
 tab_overview, tab_area, tab_model = st.tabs(["Risk overview", "Sub-county detail", "Model performance"])
 
 with tab_overview:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("High-risk sub-counties", int((now.band == "High").sum()))
     c2.metric("Elevated", int((now.band == "Elevated").sum()))
-    c3.metric("Farmer symptom reports", int(now.farmer_reports.sum()))
-    c4.metric("Confirmed outbreaks this week", int(now.confirmed_outbreak.sum()))
+    c3.metric("Unusual signals", int((now.anomaly_flags.str.len() > 0).sum()),
+              help="Sub-counties where reports or cattle arrivals jumped well above their own normal level")
+    c4.metric("Farmer symptom reports", int(now.farmer_reports.sum()))
+    c5.metric("Confirmed outbreaks", int(now.confirmed_outbreak.sum()))
 
     left, right = st.columns([3, 2])
     with left:
-        now["size"] = now.score.clip(lower=15)
-        fig = px.scatter_map(now, lat="lat", lon="lon", color="band", size="size", size_max=28,
-                             color_discrete_map=BAND_COLORS, hover_name="sub_county",
-                             hover_data={"county": True, "score": True, "data_confidence": True,
-                                         "lat": False, "lon": False, "size": False, "band": False},
-                             zoom=5.3, center={"lat": -0.6, "lon": 37.6}, height=520, map_style="open-street-map")
+        hover = {"county": True, "score": True, "data_confidence": True}
+        if geo:
+            fig = px.choropleth_map(now, geojson=geo, locations="area_id", featureidkey="properties.area_id",
+                                    color="band", color_discrete_map=BAND_COLORS, hover_name="sub_county",
+                                    hover_data={**hover, "area_id": False, "band": False}, opacity=0.75,
+                                    zoom=5.3, center={"lat": -0.6, "lon": 37.6}, height=520, map_style="carto-positron")
+            flagged = now[now.anomaly_flags.str.len() > 0]
+            if len(flagged):
+                fig.add_trace(go.Scattermap(lat=flagged.lat, lon=flagged.lon, mode="markers", name="Unusual signal",
+                                            marker=dict(size=11, color="#1B2420", symbol="circle"),
+                                            text=flagged.sub_county, hoverinfo="text"))
+        else:
+            now["size"] = now.score.clip(lower=15)
+            fig = px.scatter_map(now, lat="lat", lon="lon", color="band", size="size", size_max=28,
+                                 color_discrete_map=BAND_COLORS, hover_name="sub_county",
+                                 hover_data={**hover, "lat": False, "lon": False, "size": False, "band": False},
+                                 zoom=5.3, center={"lat": -0.6, "lon": 37.6}, height=520, map_style="open-street-map")
         fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend_title_text="Risk")
         st.plotly_chart(fig, width="stretch")
     with right:
@@ -79,6 +94,10 @@ with tab_area:
         st.markdown(f"**Risk level:** :{'red' if row.band == 'High' else 'orange' if row.band == 'Elevated' else 'green'}[{row.band}]")
         if row.data_confidence == "Low data":
             st.info("Few reports come from this area, so the score is less reliable. Low risk here may mean missing data.")
+        if row.anomaly_flags:
+            st.markdown("**Unusual signals this week**")
+            for f in row.anomaly_flags.split(" | "):
+                st.markdown(f"- ⚠️ {f}")
         st.markdown("**Why the risk is at this level**")
         for d in str(row.drivers_up).split(" | "):
             if d and d != "nan":
@@ -119,4 +138,10 @@ with tab_model:
     st.dataframe(comp, hide_index=True, width="stretch")
     st.write(f"High alert raised before lab confirmation for **{metrics['outbreaks_with_high_alert_before_confirmation']}** "
              f"test-year outbreaks, a median of **{metrics['median_lead_time_weeks']:.0f} weeks** ahead.")
+    st.write(f"The separate anomaly check flagged **{metrics.get('anomaly_flag_before_confirmation', 'n/a')}** outbreaks before "
+             f"confirmation. On average the system raises about **{metrics.get('high_alerts_per_week', 0):.1f} high alerts** and "
+             f"**{metrics.get('anomaly_flags_per_week', 0):.1f} unusual-signal flags** per week across 28 sub-counties.")
+    st.subheader("Data sources")
+    st.markdown("- **Real:** sub-county boundaries (geoBoundaries), weekly rainfall and evaporation 2013-2025 (ERA5 reanalysis via Open-Meteo).\n"
+                "- **Simulated:** cattle holdings, animals, movements, farmer and vet reports, vaccination, outbreaks.")
     st.caption("These results show the approach works on simulated data. Real-world accuracy can only be measured in a pilot with real surveillance data.")

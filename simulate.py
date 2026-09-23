@@ -59,6 +59,12 @@ AREAS = [
 areas = pd.DataFrame(AREAS, columns=["county", "sub_county", "lat", "lon", "zone",
                                      "reporting_prob", "density_index", "market_hub", "border"])
 areas["area_id"] = [f"A{i:02d}" for i in range(len(areas))]
+# Align with real constituency boundaries (geoBoundaries ADM2):
+# Merti and Transmara East have no separate polygon in the boundary file, so they are left out;
+# three areas take the name of the boundary polygon they sit in.
+areas = areas[~areas.sub_county.isin(["Merti", "Transmara East"])].reset_index(drop=True)
+areas["sub_county"] = areas.sub_county.replace({"Molo": "Kuresoi North", "Isiolo": "Isiolo North",
+                                                 "Garbatulla": "Isiolo South"})
 A = len(areas)
 
 # distance matrix (km, approx)
@@ -86,18 +92,40 @@ holdings = pd.DataFrame(hold_rows, columns=["holding_id", "area_id", "a", "holdi
 H = len(holdings)
 h_area = holdings.a.values
 
-# ---------- environment (synthetic placeholder; real CHIRPS in Sprint 2) ----------
+# ---------- environment ----------
+# Real weather (ERA5 via Open-Meteo) if data/weather_weekly.csv exists; otherwise a synthetic fallback.
 weeks = np.arange(N_WEEKS)
 dates = START + pd.to_timedelta(weeks * 7, unit="D")
 woy = dates.isocalendar().week.values.astype(int)
-aridity = np.array([0.5 if z == "pastoral" and c in ("Garissa", "Isiolo") else 1.0
-                    for z, c in zip(areas.zone, areas.county)])
-seasonal = (np.exp(-((woy - 16) ** 2) / 30) * 60 + np.exp(-((woy - 45) ** 2) / 25) * 45 + 5)
-year_factor = np.where(dates.year == 2023, 1.25, np.where(dates.year == 2024, 1.0, 0.65))  # 2025 dry year
-rain = np.maximum(0, seasonal[None, :] * year_factor[None, :] * aridity[:, None]
-                  * RNG.lognormal(0, 0.35, (A, N_WEEKS)))
-rain_clim = (seasonal[None, :] * aridity[:, None])
-dry_factor = 1 + 0.8 * np.clip(1 - rain / (rain_clim + 1), 0, 1.5)  # drier -> more mixing
+WEATHER = OUT / "weather_weekly.csv"
+if WEATHER.exists():
+    wx = pd.read_csv(WEATHER)
+    piv = lambda c: wx.pivot(index="area_id", columns="week", values=c).reindex(areas.area_id).values
+    rain, rain_clim = piv("precip_mm"), piv("precip_clim_mm")
+    et0, et0_clim = piv("et0_mm"), piv("et0_clim_mm")
+    WEATHER_SOURCE = "ERA5 reanalysis via Open-Meteo (real)"
+else:
+    aridity = np.array([0.5 if z == "pastoral" and c in ("Garissa", "Isiolo") else 1.0
+                        for z, c in zip(areas.zone, areas.county)])
+    seasonal = (np.exp(-((woy - 16) ** 2) / 30) * 60 + np.exp(-((woy - 45) ** 2) / 25) * 45 + 5)
+    year_factor = np.where(dates.year == 2023, 1.25, np.where(dates.year == 2024, 1.0, 0.65))
+    rain = np.maximum(0, seasonal[None, :] * year_factor[None, :] * aridity[:, None] * RNG.lognormal(0, 0.35, (A, N_WEEKS)))
+    rain_clim = seasonal[None, :] * aridity[:, None]
+    et0 = np.full((A, N_WEEKS), 35.0); et0_clim = et0.copy()
+    WEATHER_SOURCE = "synthetic placeholder"
+
+def rolling_sum(m, w=8):
+    c = np.cumsum(np.pad(m, ((0, 0), (w, 0))), axis=1)
+    return c[:, w:] - c[:, :-w]
+
+# 8-week rainfall deficit: drought builds up over weeks, not in a single week
+rain8, clim8 = rolling_sum(rain), rolling_sum(rain_clim)
+rain8_anom_pct = (rain8 - clim8) / (clim8 + 10) * 100
+deficit = np.clip(-rain8_anom_pct / 100, 0, 1)            # 0 = normal or wet, 1 = no rain at all
+# Dry conditions: herds concentrate at water points and move more to markets and grazing
+dry_factor = 1 + 1.2 * deficit
+pastoral = (areas.zone.values == "pastoral").astype(float)
+dry_factor = 1 + (dry_factor - 1) * (0.6 + 0.6 * pastoral[:, None])  # stronger effect in pastoral areas
 
 # ---------- vaccination ----------
 county_list = areas.county.unique()
@@ -163,7 +191,7 @@ for t in range(N_WEEKS):
     force = BETA_LOCAL * i_area / n_area * areas.density_index.values * dry_factor[:, t]
     # spillover from nearby areas
     near = (DIST < 80) & (DIST > 0)
-    force += 0.15 * (near @ (i_area / n_area))
+    force += 0.15 * (near @ (i_area / n_area)) * dry_factor[:, t]
     p_inf = 1 - np.exp(-force[h_area] * susc)
     new_inf |= (state == S) & (RNG.random(H) < p_inf)
 
@@ -220,7 +248,8 @@ for a in range(A):
     for t in range(N_WEEKS):
         rows.append(dict(
             area_id=areas.area_id[a], week=t, date=dates[t].date(),
-            rain_mm=rain[a, t], rain_anomaly=rain[a, t] - rain_clim[a, t],
+            rain_mm=rain[a, t], rain_8w_anomaly_pct=rain8_anom_pct[a, t],
+            et0_anomaly=et0[a, t] - et0_clim[a, t],
             vacc_coverage=vacc[a, t], weeks_since_campaign=min(last_campaign[a, t], 99),
             inbound_animals=inbound[a, t], inbound_external=inbound_ext[a, t],
             inbound_from_outbreak_areas=inbound_risky[a, t],
@@ -236,7 +265,8 @@ near150 = (DIST < 150) & (DIST > 0)
 nb = np.zeros((A, N_WEEKS))
 for t in range(N_WEEKS):
     nb[:, t] = near150 @ confirmed[:, max(0, t - 3):t + 1].sum(axis=1)
-aw["neighbour_outbreaks_4w"] = nb[aw.area_id.str[1:].astype(int), aw.week]
+pos = {aid: i for i, aid in enumerate(areas.area_id)}
+aw["neighbour_outbreaks_4w"] = nb[aw.area_id.map(pos).values, aw.week.values]
 
 # ---------- sample animal-level records (~10,000) ----------
 animal_rows = []
@@ -256,4 +286,4 @@ animals.to_csv(OUT / "animals.csv", index=False)
 mv.assign(date=(START + pd.to_timedelta(mv.week * 7, unit="D")).dt.date).to_csv(OUT / "movements.csv", index=False)
 aw.to_csv(OUT / "area_week_raw.csv", index=False)
 print(f"areas={A} holdings={H} animals={len(animals)} movements={len(mv)} "
-      f"confirmed_outbreaks={int(confirmed.sum())}")
+      f"confirmed_outbreaks={int(confirmed.sum())} weather={WEATHER_SOURCE}")
