@@ -1,5 +1,5 @@
 """
-Livestock Sentinel AI - data simulator (Sprint 1, walking skeleton)
+Livestock Sentinel AI - data simulator
 
 ALL DATA PRODUCED HERE IS SIMULATED. It is not government surveillance data.
 
@@ -18,8 +18,14 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-RNG = np.random.default_rng(42)
-OUT = Path(__file__).parent / "data"
+import os, json
+SEED = int(os.environ.get("SEED", 42))
+POLICY = os.environ.get("POLICY", "status_quo")          # status_quo | sentinel
+ALERTS = os.environ.get("ALERTS")                         # csv of area_id,week (sentinel policy)
+POLICY_START = int(os.environ.get("POLICY_START", 104))  # policies compared from year 3
+RNG = np.random.default_rng(SEED)
+OUT = Path(os.environ.get("OUT", Path(__file__).parent / "data"))
+WEATHER_DIR = Path(__file__).parent / "data"
 OUT.mkdir(exist_ok=True)
 
 N_WEEKS = 156                      # 3 years of weekly data
@@ -97,7 +103,7 @@ h_area = holdings.a.values
 weeks = np.arange(N_WEEKS)
 dates = START + pd.to_timedelta(weeks * 7, unit="D")
 woy = dates.isocalendar().week.values.astype(int)
-WEATHER = OUT / "weather_weekly.csv"
+WEATHER = WEATHER_DIR / "weather_weekly.csv"
 if WEATHER.exists():
     wx = pd.read_csv(WEATHER)
     piv = lambda c: wx.pivot(index="area_id", columns="week", values=c).reindex(areas.area_id).values
@@ -156,70 +162,114 @@ confirm_events = []  # (area, week_confirmed)
 active_until = np.full(A, -1)
 
 BETA_LOCAL = 1.3
+# ---------- response policies ----------
+# Status quo: act after lab confirmation -> 6-week quarantine (movement restrictions, ring vaccination)
+#             and 8-week closure of the area's livestock market.
+# Sentinel:   the same response to confirmations, PLUS early targeted action when a High alert fires:
+#             4 weeks of veterinary verification, movement checks and targeted vaccination.
+quarantine_until = np.full(A, -1); market_closed_until = np.full(A, -1); early_until = np.full(A, -1)
+alert_set = set()
+if POLICY == "sentinel" and ALERTS:
+    al = pd.read_csv(ALERTS); pos0 = {aid: i for i, aid in enumerate(areas.area_id)}
+    alert_set = {(pos0[r.area_id], int(r.week)) for r in al.itertuples() if r.area_id in pos0}
+is_market = holdings.holding_type.values == "market"
+impact = dict(infected_herd_weeks=0, herds_infected=0, animals_infected=0, confirmed_outbreaks=0,
+              market_closure_weeks=0, quarantine_weeks=0, early_action_weeks=0)
+
 for t in range(N_WEEKS):
-    # re-sample herd vaccination to follow coverage
-    herd_vacc = RNG.random(H) < vacc[h_area, t]
+    # Common random numbers: every chance event has its own random stream per week and per herd,
+    # drawn whether or not it is used. Both policies therefore face the same luck, and any
+    # difference between them comes from the policy itself.
+    rs = lambda k: np.random.default_rng([SEED, t, k])
+    u_vacc, u_intro_a, u_intro_h = rs(1).random(H), rs(2).random(A), rs(3).random(A)
+    u_move, u_local_dest, u_dest_area, u_dest_h = rs(4).random(H), rs(5).random(H), rs(6).random(H), rs(7).random(H)
+    n_anim_all, u_rec, u_trans = rs(8).integers(2, 25, H), rs(9).random(H), rs(10).random(H)
+    u_inf, t_inf, t_rec = rs(11).random(H), rs(12).integers(2, 5, H), rs(13).integers(20, 40, H)
+    rep = rs(14)
+    u_far, u_vet = rep.random((A, H)), rep.random((A, H))
+    fa_far, fa_vet = rep.poisson(0.25, A), rep.poisson(0.03, A)
+    u_det, lag = rep.random(A), rep.integers(1, 4, A)
+    for a, c in confirm_events:
+        if c == t:
+            quarantine_until[a] = t + 6; market_closed_until[a] = t + 8
+    if t >= POLICY_START:
+        for a in range(A):
+            if (a, t) in alert_set and quarantine_until[a] < t and early_until[a] < t:
+                early_until[a] = t + 4
+    quar = quarantine_until >= t; early = (early_until >= t) & ~quar; closed = market_closed_until >= t
+    if t >= POLICY_START:
+        impact["market_closure_weeks"] += int((closed & areas.market_hub.values.astype(bool)).sum())
+        impact["quarantine_weeks"] += int(quar.sum()); impact["early_action_weeks"] += int(early.sum())
+    boost = np.where(quar, 0.4, np.where(early, 0.25, 0.0))
+    herd_vacc = u_vacc < np.minimum(0.9, vacc[h_area, t] + boost[h_area])
     susc = np.where(herd_vacc, 0.15, 1.0)
 
     # introductions (rare; more at borders)
     intro_p = 0.004 + 0.01 * areas.border.values
-    for a in np.where(RNG.random(A) < intro_p)[0]:
+    for a in np.where(u_intro_a < intro_p)[0]:
         cand = np.where((h_area == a) & (state == S))[0]
         if len(cand):
-            k = RNG.choice(cand); state[k] = I; timer[k] = RNG.integers(2, 5)
+            k = cand[int(u_intro_h[a] * len(cand))]; state[k] = I; timer[k] = t_inf[k]
 
     infected = state == I
     # movements
-    p_move = 0.08 * dry_factor[h_area, t] * np.where(holdings.holding_type.values == "market", 4, 1)
-    movers = np.where(RNG.random(H) < p_move)[0]
+    p_move = 0.08 * dry_factor[h_area, t] * np.where(is_market, 4, 1)
+    p_move = p_move * np.where(quar[h_area], 0.2, np.where(early[h_area], 0.5, 1.0))
+    p_move = np.where(is_market & closed[h_area], 0.0, p_move)
+    movers = np.where(u_move < p_move)[0]
     new_inf = np.zeros(H, dtype=bool)
     for k in movers:
         a = h_area[k]
-        dest_area = a if RNG.random() < 0.6 else RNG.choice(A, p=W[a])
+        dest_area = a if u_local_dest[k] < 0.6 else int(np.searchsorted(np.cumsum(W[a]), u_dest_area[k] * 0.999999))
         cand = np.where(h_area == dest_area)[0]
-        d = RNG.choice(cand)
-        n_anim = int(RNG.integers(2, 25))
-        recorded = RNG.random() < (0.85 if holdings.holding_type.values[k] == "market" else 0.6)
+        d = cand[int(u_dest_h[k] * len(cand))]
+        n_anim = int(n_anim_all[k])
+        recorded = u_rec[k] < (0.85 if is_market[k] else 0.6)
         moves_log.append((t, holdings.holding_id.values[k], holdings.holding_id.values[d],
                           a, dest_area, n_anim, int(recorded)))
-        if infected[k] and state[d] == S and RNG.random() < 0.55 * susc[d]:
+        if infected[k] and state[d] == S and u_trans[k] < 0.55 * susc[d]:
             new_inf[d] = True
 
     # local transmission within area (density- and dryness-dependent)
     n_area = np.bincount(h_area, minlength=A)
     i_area = np.bincount(h_area, weights=infected, minlength=A)
     force = BETA_LOCAL * i_area / n_area * areas.density_index.values * dry_factor[:, t]
-    # spillover from nearby areas
+    force = force * np.where(quar, 0.6, np.where(early, 0.75, 1.0))
     near = (DIST < 80) & (DIST > 0)
     force += 0.15 * (near @ (i_area / n_area)) * dry_factor[:, t]
     p_inf = 1 - np.exp(-force[h_area] * susc)
-    new_inf |= (state == S) & (RNG.random(H) < p_inf)
+    new_inf |= (state == S) & (u_inf < p_inf)
 
     # update states
     timer[infected] -= 1
     recover = infected & (timer <= 0)
-    state[recover] = R; timer[recover] = RNG.integers(20, 40, recover.sum())
+    state[recover] = R; timer[recover] = t_rec[recover]
     wane = (state == R) & (~recover)
     timer[wane] -= 1
     state[wane & (timer <= 0)] = S
-    state[new_inf] = I; timer[new_inf] = RNG.integers(2, 5, new_inf.sum())
+    state[new_inf] = I; timer[new_inf] = t_inf[new_inf]
+    if t >= POLICY_START:
+        impact["herds_infected"] += int(new_inf.sum())
+        impact["animals_infected"] += int(holdings.herd_size.values[new_inf].sum())
+        impact["infected_herd_weeks"] += int((state == I).sum())
 
     infected = state == I
     inf_count[:, t] = np.bincount(h_area, weights=infected, minlength=A)
 
-    # observable reports (under-reporting + false alarms)
+    # observable reports (under-reporting + false alarms); each infected herd has its own draw
     for a in range(A):
-        n_i = int(inf_count[a, t])
+        idx = np.where(infected & (h_area == a))[0]
+        n_i = len(idx)
         rp = areas.reporting_prob[a]
-        farmer_rep[a, t] = RNG.binomial(n_i, rp) + RNG.poisson(0.25)
-        vet_rep[a, t] = RNG.binomial(n_i, rp * 0.4) + RNG.poisson(0.03)
+        farmer_rep[a, t] = int((u_far[a, idx] < rp).sum()) + fa_far[a]
+        vet_rep[a, t] = int((u_vet[a, idx] < rp * 0.4).sum()) + fa_vet[a]
         # official detection -> lab confirmation with delay
         if n_i > 0 and t > active_until[a] and a not in detected_week:
-            if RNG.random() < 1 - (1 - rp * 0.5) ** n_i:
+            if u_det[a] < 1 - (1 - rp * 0.5) ** n_i:
                 detected_week[a] = t
         if a in detected_week:
             dt = detected_week.pop(a)
-            conf = dt + int(RNG.integers(1, 4))
+            conf = dt + int(lag[a])
             if conf < N_WEEKS:
                 confirm_events.append((a, conf))
             active_until[a] = conf + 8   # no "new" outbreak declared within 8 weeks
@@ -280,6 +330,9 @@ for hid, a_id, n in zip(holdings.holding_id, holdings.area_id, per_hold):
 animals = pd.DataFrame(animal_rows, columns=["animal_id", "species", "breed", "sex", "age_months",
                                              "holding_id", "area_id", "vaccinated_fmd"])
 
+impact["confirmed_outbreaks"] = int(sum(1 for a, c in confirm_events if c >= POLICY_START))
+impact.update(seed=SEED, policy=POLICY)
+(OUT / "impact_summary.json").write_text(json.dumps(impact))
 areas.to_csv(OUT / "areas.csv", index=False)
 holdings.drop(columns="a").to_csv(OUT / "holdings.csv", index=False)
 animals.to_csv(OUT / "animals.csv", index=False)

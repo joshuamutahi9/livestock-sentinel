@@ -1,0 +1,62 @@
+{
+  "n_worlds": 20,
+  "period": "one simulated year (year 3), 26 sub-counties",
+  "metrics": {
+    "herds_infected": {
+      "status_quo": 623.5,
+      "sentinel": 556.6,
+      "reduction_pct_mean": 11.760280559469292,
+      "reduction_pct_p10": 0.6331214547210052,
+      "reduction_pct_p90": 20.65389876880986,
+      "worlds_improved": 18
+    },
+    "animals_infected": {
+      "status_quo": 28667.9,
+      "sentinel": 25621.9,
+      "reduction_pct_mean": 11.448073853020082,
+      "reduction_pct_p10": -0.8150029184499836,
+      "reduction_pct_p90": 23.04072868914118,
+      "worlds_improved": 17
+    },
+    "infected_herd_weeks": {
+      "status_quo": 1902.1,
+      "sentinel": 1686.95,
+      "reduction_pct_mean": 12.57581339721535,
+      "reduction_pct_p10": 2.544410147743893,
+      "reduction_pct_p90": 20.68140709527077,
+      "worlds_improved": 18
+    },
+    "confirmed_outbreaks": {
+      "status_quo": 42.65,
+      "sentinel": 43.05,
+      "reduction_pct_mean": 0.8780435119950502,
+      "reduction_pct_p10": -21.0188679245283,
+      "reduction_pct_p90": 17.692990239574094,
+      "worlds_improved": 11
+    },
+    "market_closure_weeks": {
+      "status_quo": 171.15,
+      "sentinel": 170.3,
+      "reduction_pct_mean": 2.9456450106364067,
+      "reduction_pct_p10": -20.7,
+      "reduction_pct_p90": 20.199369227303457,
+      "worlds_improved": 11
+    },
+    "quarantine_weeks": {
+      "status_quo": 299.75,
+      "sentinel": 299.85,
+      "reduction_pct_mean": 1.9330441648634782,
+      "reduction_pct_p10": -20.899097864404144,
+      "reduction_pct_p90": 21.79987456138865,
+      "worlds_improved": 12
+    },
+    "early_action_weeks": {
+      "status_quo": 0.0,
+      "sentinel": 143.85,
+      "reduction_pct_mean": NaN,
+      "reduction_pct_p10": NaN,
+      "reduction_pct_p90": NaN,
+      "worlds_improved": 0
+    }
+  }
+}

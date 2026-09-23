@@ -1,27 +1,27 @@
 {
   "test_period": "Year 3 (weeks 104-155), never seen in training",
-  "n_outbreaks_test": 41,
+  "n_outbreaks_test": 47,
   "roc_auc": {
-    "lightgbm": 0.8222891851683392,
-    "logistic": 0.7971212250428783,
-    "seasonal_baseline": 0.6295069695160664
+    "lightgbm": 0.8550116206749812,
+    "logistic": 0.8456577956725262,
+    "seasonal_baseline": 0.5610453697338701
   },
   "pr_auc": {
-    "lightgbm": 0.32708404212745656,
-    "logistic": 0.28884170289793565,
-    "seasonal_baseline": 0.11361226135499154,
-    "random": 0.06692307692307692
+    "lightgbm": 0.4584106782081496,
+    "logistic": 0.4162811640475622,
+    "seasonal_baseline": 0.08802307150958563,
+    "random": 0.07846153846153846
   },
   "recall_top5_areas_per_week": {
-    "lightgbm": 0.6206896551724138,
-    "logistic": 0.5402298850574713,
-    "seasonal_baseline": 0.3103448275862069
+    "lightgbm": 0.6764705882352942,
+    "logistic": 0.5980392156862745,
+    "seasonal_baseline": 0.14705882352941177
   },
-  "outbreaks_with_high_alert_before_confirmation": "29/41",
+  "outbreaks_with_high_alert_before_confirmation": "38/47",
   "median_lead_time_weeks": 2.0,
-  "mean_lead_time_weeks": 2.4827586206896552,
-  "high_alerts_per_week": 2.16,
-  "anomaly_flag_before_confirmation": "12/41",
-  "anomaly_median_lead_time_weeks": 1.0,
-  "anomaly_flags_per_week": 1.56
+  "mean_lead_time_weeks": 2.236842105263158,
+  "high_alerts_per_week": 2.3,
+  "anomaly_flag_before_confirmation": "19/47",
+  "anomaly_median_lead_time_weeks": 3.0,
+  "anomaly_flags_per_week": 1.48
 }

@@ -14,6 +14,8 @@ and explains why.
 |---|---|
 | `simulate.py` | Simulates FMD spreading between cattle herds through local contact and animal movement across 26 real Kenyan sub-counties. Produces only the signals that would be observable in reality. |
 | `train.py` | Builds features, trains the model (LightGBM), compares it with simple baselines on a held-out year, and creates risk scores with plain-language explanations (SHAP). |
+| `features.py` | Feature engineering and the anomaly-detection layer, shared by training and impact runs. |
+| `impact.py` | Runs the same simulated year twice in 20 simulated worlds (act after confirmation vs act on alerts) to estimate impact. |
 | `app.py` | The dashboard. |
 | `colab/sprint2_real_data.ipynb` | Downloads the real boundary and weather data. |
 | `data/` | Generated data and model outputs. |
@@ -31,6 +33,7 @@ streamlit run app.py
 pip install -r requirements-dev.txt
 python simulate.py
 python train.py
+python impact.py   # about 2 minutes
 ```
 
 ## Sprint log
@@ -39,6 +42,7 @@ python train.py
 |---|---|---|---|
 | 0 | 23 Sep 2026 | Set-up | Backlog, tools, accounts |
 | 1 | 23 Sep 2026 | Walking skeleton | Simulator, model and back-test, risk map, sub-county detail, model performance page |
+| 3a | 23 Sep 2026 | Usable product, part 1 | Alerts feed with verification status, impact simulator (common random numbers across 20 worlds), map polish |
 | 2 | 24-25 Sep 2026 | Credible AI | Real weather (ERA5) and boundaries, 8-week drought mechanism, anomaly detection layer, data sources page |
 
 ## Data sources

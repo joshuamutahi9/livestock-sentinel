@@ -18,49 +18,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 D = Path(__file__).parent / "data"
-aw = pd.read_csv(D / "area_week_raw.csv").sort_values(["area_id", "week"])
+from features import build_features
+aw, FEATURES = build_features(pd.read_csv(D / "area_week_raw.csv"))
 g = aw.groupby("area_id")
-
-# ---------- features (observable signals only) ----------
-def roll(col, w):
-    return g[col].transform(lambda s: s.rolling(w, min_periods=1).sum())
-
-aw["farmer_reports_2w"] = roll("farmer_reports", 2)
-aw["vet_reports_2w"] = roll("vet_reports", 2)
-base_rep = g["farmer_reports"].transform(lambda s: s.shift(1).rolling(12, min_periods=4).mean())
-sd_rep = g["farmer_reports"].transform(lambda s: s.shift(1).rolling(12, min_periods=4).std())
-aw["report_anomaly_z"] = ((aw.farmer_reports - base_rep) / (sd_rep.fillna(1) + 0.5)).fillna(0)
-base_in = g["inbound_animals"].transform(lambda s: s.shift(1).rolling(8, min_periods=3).mean())
-aw["inbound_change_pct"] = ((aw.inbound_animals - base_in) / (base_in + 5) * 100).fillna(0)
-aw["inbound_from_outbreak_areas_2w"] = roll("inbound_from_outbreak_areas", 2)
-aw["own_outbreak_8w"] = g["confirmed_outbreak"].transform(lambda s: s.shift(1).rolling(8, min_periods=1).sum()).fillna(0)
-aw["woy_sin"] = np.sin(2 * np.pi * (aw.week % 52) / 52)
-aw["woy_cos"] = np.cos(2 * np.pi * (aw.week % 52) / 52)
-
-# ---------- anomaly detection (separate early tripwire, not the ML model) ----------
-def ewma_z(col, span=8):
-    mu = g[col].transform(lambda x: x.shift(1).ewm(span=span, min_periods=4).mean())
-    sd = g[col].transform(lambda x: x.shift(1).ewm(span=span, min_periods=4).std())
-    return ((aw[col] - mu) / (sd.fillna(0) + 1)).fillna(0)
-aw["z_farmer"] = ewma_z("farmer_reports")
-aw["z_vet"] = ewma_z("vet_reports")
-aw["z_inbound"] = ewma_z("inbound_animals")
-flags = []
-for r in aw[["z_farmer", "z_vet", "z_inbound", "farmer_reports", "vet_reports", "inbound_change_pct"]].itertuples(index=False):
-    f = []
-    if r.z_farmer > 2 and r.farmer_reports >= 2: f.append(f"Farmer symptom reports unusually high ({int(r.farmer_reports)} this week)")
-    if r.z_vet > 2 and r.vet_reports >= 1: f.append(f"Vet-reported suspected cases unusually high ({int(r.vet_reports)} this week)")
-    if r.z_inbound > 2.5 and r.inbound_change_pct > 40: f.append(f"Cattle arrivals unusually high ({r.inbound_change_pct:+.0f}% on recent weeks)")
-    flags.append(" | ".join(f))
-aw["anomaly_flags"] = flags
-
-# target: new confirmed outbreak in weeks t+1..t+2
-aw["target"] = (g["confirmed_outbreak"].shift(-1).fillna(0) + g["confirmed_outbreak"].shift(-2).fillna(0) > 0).astype(int)
-
-FEATURES = ["farmer_reports", "farmer_reports_2w", "vet_reports", "vet_reports_2w", "report_anomaly_z",
-            "inbound_animals", "inbound_change_pct", "inbound_external", "inbound_from_outbreak_areas_2w",
-            "neighbour_outbreaks_4w", "own_outbreak_8w", "vacc_coverage", "weeks_since_campaign",
-            "rain_8w_anomaly_pct", "et0_anomaly", "density_index", "market_hub", "border", "woy_sin", "woy_cos"]
 
 valid = (aw.week >= 8) & (aw.week <= aw.week.max() - 2)
 train = aw[valid & (aw.week < 104)]
@@ -155,7 +115,7 @@ def describe(f, r):
         "inbound_external": f"{int(r.inbound_external)} cattle arrived from other sub-counties",
         "inbound_from_outbreak_areas_2w": f"{int(r.inbound_from_outbreak_areas_2w)} cattle arrived from areas with recent outbreaks",
         "neighbour_outbreaks_4w": f"{int(r.neighbour_outbreaks_4w)} confirmed outbreaks in nearby sub-counties (last 4 weeks)",
-        "own_outbreak_8w": "outbreak declared here in the last 8 weeks" if r.own_outbreak_8w else "no outbreak declared here in the last 8 weeks",
+        "own_outbreak_8w": "outbreak declared here in the last 8 weeks" if r.own_outbreak_8w else None,
         "vacc_coverage": f"vaccination coverage about {r.vacc_coverage:.0%}",
         "weeks_since_campaign": f"{int(r.weeks_since_campaign)} weeks since last vaccination campaign" if r.weeks_since_campaign < 99 else "no recent vaccination campaign",
         "rain_8w_anomaly_pct": (f"rainfall {abs(r.rain_8w_anomaly_pct):.0f}% below normal over the last 8 weeks" if r.rain_8w_anomaly_pct < -10
@@ -165,15 +125,15 @@ def describe(f, r):
         "density_index": "high cattle density" if r.density_index >= 1.1 else "moderate cattle density",
         "market_hub": "major livestock market in the area" if r.market_hub else "no major market",
         "border": "border area with cross-border movement" if r.border else "not a border area",
-        "woy_sin": "seasonal timing", "woy_cos": "seasonal timing",
+        "woy_sin": "time of year when outbreaks have been more common", "woy_cos": "time of year when outbreaks have been more common",
     }[f]
 
 drivers_up, drivers_down = [], []
 for i, r in enumerate(test.itertuples()):
     order = np.argsort(-sv[i])
     up = [describe(FEATURES[j], r) for j in order[:6] if sv[i, j] > 0.02]
-    up = list(dict.fromkeys(up))[:4]
-    down = [describe(FEATURES[j], r) for j in np.argsort(sv[i])[:3] if sv[i, j] < -0.05][:2]
+    up = [u for u in dict.fromkeys(up) if u][:4]
+    down = [x for x in (describe(FEATURES[j], r) for j in np.argsort(sv[i])[:3] if sv[i, j] < -0.05) if x][:2]
     drivers_up.append(" | ".join(up)); drivers_down.append(" | ".join(down))
 test["drivers_up"] = drivers_up
 test["drivers_down"] = drivers_down
@@ -185,4 +145,6 @@ keep = ["area_id", "week", "date", "score", "band", "data_confidence", "drivers_
         "inbound_from_outbreak_areas_2w", "vacc_coverage", "rain_mm", "rain_8w_anomaly_pct", "anomaly_flags",
         "confirmed_outbreak", "target"]
 test[keep].to_csv(D / "risk_scores.csv", index=False)
+model.booster_.save_model(str(D / "model.txt"))
+(D / "score_thresholds.json").write_text(json.dumps({"p_mod": float(p_mod), "p_high": float(p_high)}))
 print("risk_scores.csv rows:", len(test))
