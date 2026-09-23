@@ -19,7 +19,7 @@ SYMPTOMS = {
     "foot sores or lameness": ["chechemea", "kuchechemea", "kwato", "miguu", "mguu", "lame", "limp", "hoof", "hooves", "feet", "foot"],
     "fever": ["homa", "joto", "fever", "hot body"],
     "not eating": ["hawali", "hakuli", "hawakuli", "kataa kula", "not eating", "refuse to eat", "won't eat", "stopped eating"],
-    "milk drop": ["maziwa yamepungua", "maziwa kidogo", "maziwa", "milk"],
+    "milk drop": ["maziwa", "milk"],
     "death": ["amekufa", "wamekufa", "kufa", "died", "dead", "death"],
 }
 FMD_CORE = {"drooling", "mouth sores or blisters", "foot sores or lameness"}
@@ -68,7 +68,7 @@ def parse_fallback(text, registered_area, area_names):
     if any(w in t for w in ["malengelenge", "blister"]):   # blisters: mouth or feet, depending on context
         where = "foot sores or lameness" if any(w in t for w in ["kwato", "miguu", "hoof", "feet", "foot"]) else "mouth sores or blisters"
         if where not in found: found.append(where)
-    if "milk drop" in found and not re.search(r"(pungua|kidogo|drop|less|reduc|low)", t):
+    if "milk drop" in found and not re.search(r"(pungu|kidogo|drop|less|reduc|low)", t):
         found.remove("milk drop")
     species = next((s for s, w in SPECIES.items() if any(x in t for x in w)), "unknown")
     n = None
@@ -110,23 +110,41 @@ def _call_claude(prompt, key, model="claude-haiku-4-5-20251001"):
     resp = requests.post("https://api.anthropic.com/v1/messages", timeout=30, headers={
         "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
         json={"model": model, "max_tokens": 400, "messages": [{"role": "user", "content": prompt}]})
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        raise AIError(f"Anthropic returned {resp.status_code}: {resp.text[:180]}")
     return "".join(b.get("text", "") for b in resp.json()["content"])
 
 
-def _call_gemini(prompt, key, model="gemini-2.5-flash-lite"):
-    resp = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                         params={"key": key}, timeout=30,
-                         json={"contents": [{"parts": [{"text": prompt}]}],
-                               "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}})
-    resp.raise_for_status()
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+class AIError(Exception):
+    """Readable error that never contains the API key."""
+
+
+GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+
+
+def _call_gemini(prompt, key, model=None):
+    last = None
+    for m in ([model] if model else []) + GEMINI_MODELS:
+        resp = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                             headers={"x-goog-api-key": key}, timeout=30,
+                             json={"contents": [{"parts": [{"text": prompt}]}],
+                                   "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}})
+        if resp.status_code == 200:
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            msg = resp.json().get("error", {}).get("message", "")
+        except Exception:
+            msg = resp.text[:200]
+        last = AIError(f"Google returned {resp.status_code} for {m}: {msg[:180]}")
+        if resp.status_code != 404:   # only a missing model is worth retrying with another model
+            break
+    raise last
 
 
 def parse_ai(text, registered_area, area_names, provider, key, model=None):
     prompt = PROMPT.format(reg=registered_area, areas=", ".join(area_names), labels=", ".join(SYMPTOMS), msg=text)
     if provider == "gemini":
-        raw = _call_gemini(prompt, key, model or "gemini-2.5-flash-lite")
+        raw = _call_gemini(prompt, key, model)
     else:
         raw = _call_claude(prompt, key, model or "claude-haiku-4-5-20251001")
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -147,7 +165,8 @@ def parse(text, registered_area, area_names, provider=None, key=None, model=None
             return parse_ai(text, registered_area, area_names, provider, key, model)
         except Exception as e:  # fall back rather than fail in front of a user
             r = parse_fallback(text, registered_area, area_names)
-            r["engine"] = f"keyword fallback (AI unavailable: {type(e).__name__})"
+            r["engine"] = "keyword fallback"
+            r["ai_error"] = str(e) if isinstance(e, AIError) else type(e).__name__
             return r
     return parse_fallback(text, registered_area, area_names)
 

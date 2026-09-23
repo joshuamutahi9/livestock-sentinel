@@ -179,16 +179,25 @@ with tab_sms:
     engine_name = {"gemini": "AI (Google Gemini language model)", "claude": "AI (Claude language model)"}.get(
         provider, "keyword fallback (add an API key to switch on the AI engine)")
     st.markdown(f"Language engine: **{engine_name}**")
+    if st.session_state.get("ai_error"):
+        st.error("The AI engine could not be reached, so the keyword fallback was used. Details: " + st.session_state.ai_error)
     if "sms_reports" not in st.session_state:
         st.session_state.sms_reports = []
     names = areas.sub_county.tolist()
 
     @st.cache_data(show_spinner="Reading the message...", max_entries=500)
-    def understand(text, reg, provider, _key, model):
-        return sms.parse(text, reg, names, provider, _key, model)
+    def ai_understand(text, reg, provider, _key, model):
+        return sms.parse_ai(text, reg, names, provider, _key, model)   # errors are not cached
 
     def process(phone, reg, text):
-        r = dict(understand(text, reg, provider, api_key, llm_model))
+        r = None
+        if provider and api_key:
+            try:
+                r = dict(ai_understand(text, reg, provider, api_key, llm_model))
+            except Exception as e:
+                st.session_state.ai_error = str(e) if isinstance(e, sms.AIError) else type(e).__name__
+        if r is None:
+            r = sms.parse_fallback(text, reg, names)
         r.update(phone=phone, registered=reg, text=text, status="Needs review" if r["needs_review"] else "Accepted")
         st.session_state.sms_reports.insert(0, r)
 
@@ -221,7 +230,8 @@ with tab_sms:
                     st.markdown(f"> {r['text']}")
                     sig = {"strong": ":red[Strong FMD-like signs]", "possible": ":orange[Possible FMD-like sign]",
                            "none": "No FMD-like signs"}[r["fmd_signs"]]
-                    st.markdown(f"{sig}  \nAnimals: **{r.get('n_animals') or 'not stated'} {r['species']}**, "
+                    n_txt = f"{r['n_animals']} {r['species']}" if r.get("n_animals") else f"{r['species']} (number not stated)"
+                    st.markdown(f"{sig}  \nAnimals: **{n_txt}**, "
                                 f"location: **{r['location']}**  \nSymptoms: {', '.join(r['symptoms']) or 'none recognised'}  \n"
                                 f"Confidence: {r['confidence']:.0%}, engine: {r['engine']}")
                 with b:
@@ -239,7 +249,7 @@ with tab_sms:
         st.caption("Accepted reports count towards the farmer symptom reports the risk model uses for that sub-county. "
                    "In this prototype they are kept for your browser session only; the scores shown elsewhere use the simulated reports.")
         if st.button("Clear inbox"):
-            st.session_state.sms_reports = []; st.rerun()
+            st.session_state.sms_reports = []; st.session_state.ai_error = None; st.rerun()
 
 with tab_area:
     pick = st.selectbox("Sub-county", now.sort_values("score", ascending=False).sub_county.tolist())
