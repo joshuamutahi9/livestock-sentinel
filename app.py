@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import sms
 
 D = Path(__file__).parent / "data"
 BAND_COLORS = {"High": "#B3261E", "Elevated": "#D98A1A", "Low": "#2F7D4F"}
@@ -26,10 +27,11 @@ def load():
         areas[["area_id", "county", "sub_county", "lat", "lon"]], on="area_id")
     metrics = json.loads((D / "model_metrics.json").read_text())
     geo = json.loads((D / "boundaries.geojson").read_text()) if (D / "boundaries.geojson").exists() else None
-    return areas, risk, metrics, geo
+    mv = pd.read_csv(D / "movements.csv")
+    return areas, risk, metrics, geo, mv
 
 
-areas, risk, metrics, geo = load()
+areas, risk, metrics, geo, mv = load()
 risk["anomaly_flags"] = risk.anomaly_flags.fillna("")
 
 st.title("Livestock Sentinel AI")
@@ -45,8 +47,8 @@ with st.sidebar:
 
 now = risk[(risk.date.dt.date == week) & (risk.county.isin(counties))].copy()
 
-tab_overview, tab_alerts, tab_area, tab_impact, tab_model = st.tabs(
-    ["Risk overview", "Alerts", "Sub-county detail", "Impact", "Model performance"])
+tab_overview, tab_replay, tab_alerts, tab_sms, tab_area, tab_impact, tab_model = st.tabs(
+    ["Risk overview", "Replay", "Alerts", "Farmer reports", "Sub-county detail", "Impact", "Model performance"])
 
 with tab_overview:
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -88,6 +90,43 @@ with tab_overview:
         top["Main signals"] = top["Main signals"].fillna("").str.split(" | ", regex=False).str[0]
         st.dataframe(top, hide_index=True, width="stretch", height=470)
 
+with tab_replay:
+    st.subheader("Watch risk build up week by week")
+    st.caption("Press play to replay the test year. Sub-counties shade from green to red as risk rises; "
+               "a black cross marks the week an outbreak was confirmed. Look for areas turning red before a cross appears.")
+    if geo is None:
+        st.info("Replay needs the sub-county boundary file.")
+    else:
+        rp = risk[risk.county.isin(counties)].sort_values(["date", "area_id"])
+        wks = sorted(rp.date.unique())
+        scale = [[0, "#2F7D4F"], [0.39, "#2F7D4F"], [0.4, "#D98A1A"], [0.69, "#D98A1A"], [0.7, "#B3261E"], [1, "#B3261E"]]
+        def frame_data(d, full=True):
+            f = rp[rp.date == d]; ob = f[f.confirmed_outbreak == 1]
+            if not full:   # frames only carry what changes, keeping the page light
+                return [go.Choroplethmap(z=f.score, locations=f.area_id, text=f.sub_county),
+                        go.Scattermap(lat=ob.lat, lon=ob.lon, text=["✕"] * len(ob))]
+            return [go.Choroplethmap(geojson=geo, locations=f.area_id, featureidkey="properties.area_id", z=f.score,
+                                     zmin=0, zmax=100, colorscale=scale, marker_opacity=0.75, text=f.sub_county,
+                                     hovertemplate="%{text}<br>Score %{z}<extra></extra>",
+                                     colorbar=dict(title="Risk", tickvals=[20, 55, 85], ticktext=["Low", "Elevated", "High"])),
+                    go.Scattermap(lat=ob.lat, lon=ob.lon, mode="text+markers", text=["✕"] * len(ob),
+                                  marker=dict(size=1, color="#1B2420"), textfont=dict(size=22, color="#1B2420"),
+                                  name="Outbreak confirmed", hoverinfo="skip")]
+        figr = go.Figure(data=frame_data(wks[0]),
+                         frames=[go.Frame(data=frame_data(d, full=False), name=pd.Timestamp(d).strftime("%d %b %Y")) for d in wks])
+        steps = [dict(method="animate", label=pd.Timestamp(d).strftime("%d %b"),
+                      args=[[pd.Timestamp(d).strftime("%d %b %Y")], dict(mode="immediate", frame=dict(duration=0, redraw=True))])
+                 for d in wks]
+        figr.update_layout(height=560, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+                           map=dict(style="carto-positron", zoom=5.9, center={"lat": -0.5, "lon": 37.9}),
+                           updatemenus=[dict(type="buttons", x=0.02, y=0.06, xanchor="left", buttons=[
+                               dict(label="▶ Play", method="animate",
+                                    args=[None, dict(frame=dict(duration=600, redraw=True), fromcurrent=True)]),
+                               dict(label="❚❚ Pause", method="animate",
+                                    args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])])],
+                           sliders=[dict(steps=steps, x=0.2, len=0.78, y=0.06, currentvalue=dict(prefix="Week of "))])
+        st.plotly_chart(figr, width="stretch")
+
 with tab_alerts:
     st.subheader("Alerts to follow up")
     st.caption("High-risk scores and unusual signals from the last 4 weeks. A veterinary officer verifies each one "
@@ -124,6 +163,74 @@ with tab_alerts:
                     st.caption("Shown only in this prototype, to demonstrate accuracy. A real officer would not know this in advance.")
     st.caption("In this prototype, statuses are kept only for your browser session. In a pilot they would be stored "
                "and used as new training data, so the model learns from every verified alert.")
+
+with tab_sms:
+    st.subheader("Farmer reports by SMS")
+    api_key = None
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+    except Exception:
+        api_key = None
+    st.caption("Farmers text what they see, in Swahili, English or a mix. The AI turns each message into structured data, "
+               "replies to the farmer, and sends unclear reports to a person to check. It flags possible signs; it does not diagnose.")
+    st.markdown(f"Language engine: **{'AI (Claude language model)' if api_key else 'keyword fallback (add an API key to switch on the AI engine)'}**")
+    if "sms_reports" not in st.session_state:
+        st.session_state.sms_reports = []
+    names = areas.sub_county.tolist()
+
+    def process(phone, reg, text):
+        r = sms.parse(text, reg, names, api_key)
+        r.update(phone=phone, registered=reg, text=text, status="Needs review" if r["needs_review"] else "Accepted")
+        st.session_state.sms_reports.insert(0, r)
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.markdown("**Demo inbox**")
+        if st.button("Receive the demo messages", disabled=len(st.session_state.sms_reports) > 0):
+            for ph, reg, txt in sms.SAMPLES:
+                process(ph, reg, txt)
+            st.rerun()
+    with c2:
+        st.markdown("**Send your own test SMS**")
+        txt = st.text_area("Message", placeholder="e.g. Ng'ombe wangu wawili wanatoa mate na wanachechemea", height=80)
+        reg = st.selectbox("Sender's registered sub-county", names)
+        if st.button("Send test SMS", disabled=not txt.strip()):
+            process("+2547••••000", reg, txt.strip())
+            st.rerun()
+
+    reps = st.session_state.sms_reports
+    if reps:
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Reports received", len(reps))
+        k2.metric("Accepted", sum(r["status"] == "Accepted" for r in reps))
+        k3.metric("Waiting for review", sum(r["status"] == "Needs review" for r in reps))
+        for i, r in enumerate(reps):
+            with st.container(border=True):
+                a, b = st.columns([3, 2])
+                with a:
+                    st.markdown(f"**{r['phone']}** (registered in {r['registered']})")
+                    st.markdown(f"> {r['text']}")
+                    sig = {"strong": ":red[Strong FMD-like signs]", "possible": ":orange[Possible FMD-like sign]",
+                           "none": "No FMD-like signs"}[r["fmd_signs"]]
+                    st.markdown(f"{sig}  \nAnimals: **{r.get('n_animals') or 'not stated'} {r['species']}**, "
+                                f"location: **{r['location']}**  \nSymptoms: {', '.join(r['symptoms']) or 'none recognised'}  \n"
+                                f"Confidence: {r['confidence']:.0%}, engine: {r['engine']}")
+                with b:
+                    st.markdown("**Reply sent to farmer**")
+                    st.info(r["reply"])
+                    if r["status"] == "Needs review":
+                        st.warning("Needs review: " + "; ".join(r["review_reasons"]))
+                        x, y = st.columns(2)
+                        if x.button("Accept", key=f"acc{i}"):
+                            r["status"] = "Accepted"; st.rerun()
+                        if y.button("Reject", key=f"rej{i}"):
+                            r["status"] = "Rejected"; st.rerun()
+                    else:
+                        st.success(r["status"])
+        st.caption("Accepted reports count towards the farmer symptom reports the risk model uses for that sub-county. "
+                   "In this prototype they are kept for your browser session only; the scores shown elsewhere use the simulated reports.")
+        if st.button("Clear inbox"):
+            st.session_state.sms_reports = []; st.rerun()
 
 with tab_area:
     pick = st.selectbox("Sub-county", now.sort_values("score", ascending=False).sub_county.tolist())
@@ -162,6 +269,39 @@ with tab_area:
                            title="Risk score over the test year", legend=dict(orientation="h", y=-0.15))
         st.plotly_chart(fig2, width="stretch")
         st.caption("Look for the risk line rising into the red band before an outbreak is confirmed (✕).")
+
+    st.markdown("**Where cattle arriving here came from (last 4 weeks)**")
+    aidx = int(areas.index[areas.sub_county == pick][0])
+    wk_now = int(row.week)
+    inb = mv[(mv.to_area == aidx) & (mv.from_area != aidx) & (mv.permit_recorded == 1) &
+             (mv.week > wk_now - 4) & (mv.week <= wk_now)]
+    if inb.empty:
+        st.caption("No recorded arrivals from other sub-counties in the last 4 weeks.")
+    else:
+        flows = inb.groupby("from_area", as_index=False).n_animals.sum()
+        flows["origin"] = areas.sub_county.values[flows.from_area]
+        flows = flows.merge(now[["sub_county", "band"]], left_on="origin", right_on="sub_county", how="left")
+        flows["band"] = flows.band.fillna("Low")
+        figm = go.Figure()
+        dlat, dlon = areas.lat[aidx], areas.lon[aidx]
+        for f in flows.itertuples():
+            figm.add_trace(go.Scattermap(lat=[areas.lat[f.from_area], dlat], lon=[areas.lon[f.from_area], dlon], mode="lines",
+                                         line=dict(width=1 + f.n_animals / flows.n_animals.max() * 7, color=BAND_COLORS[f.band]),
+                                         hoverinfo="text", text=f"{f.origin}: {int(f.n_animals)} cattle", showlegend=False))
+        figm.add_trace(go.Scattermap(lat=areas.lat[flows.from_area], lon=areas.lon[flows.from_area], mode="markers",
+                                     marker=dict(size=9, color=[BAND_COLORS[b] for b in flows.band]),
+                                     text=flows.origin, hoverinfo="text", showlegend=False))
+        figm.add_trace(go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker=dict(size=16, color="#1B2420"),
+                                     text=[pick], hoverinfo="text", showlegend=False))
+        figm.update_layout(height=360, margin=dict(l=0, r=0, t=0, b=0),
+                           map=dict(style="carto-positron", zoom=6, center={"lat": dlat, "lon": dlon}))
+        m1, m2 = st.columns([3, 2])
+        m1.plotly_chart(figm, width="stretch")
+        m2.dataframe(flows.sort_values("n_animals", ascending=False)[["origin", "n_animals", "band"]]
+                     .rename(columns={"origin": "From", "n_animals": "Cattle", "band": "Risk there now"}),
+                     hide_index=True, width="stretch")
+        st.caption("Line thickness shows how many cattle came from each area; colour shows that area's current risk. "
+                   "Recorded movements only; unrecorded movements are not visible.")
 
 with tab_impact:
     st.subheader("What difference could early action make?")
