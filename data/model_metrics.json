@@ -1,0 +1,23 @@
+{
+  "test_period": "Year 3 (weeks 104-155), never seen in training",
+  "n_outbreaks_test": 37,
+  "roc_auc": {
+    "lightgbm": 0.8181808797266468,
+    "logistic": 0.7386834037018302,
+    "seasonal_baseline": 0.47885332039516465
+  },
+  "pr_auc": {
+    "lightgbm": 0.35232232901691257,
+    "logistic": 0.21290967713187592,
+    "seasonal_baseline": 0.054754030742616595,
+    "random": 0.052142857142857144
+  },
+  "recall_top5_areas_per_week": {
+    "lightgbm": 0.6575342465753424,
+    "logistic": 0.4794520547945205,
+    "seasonal_baseline": 0.1917808219178082
+  },
+  "outbreaks_with_high_alert_before_confirmation": "24/37",
+  "median_lead_time_weeks": 2.0,
+  "mean_lead_time_weeks": 2.75
+}

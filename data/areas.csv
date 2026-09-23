@@ -1,0 +1,29 @@
+county,sub_county,lat,lon,zone,reporting_prob,density_index,market_hub,border,area_id
+Narok,Narok North,-1.08,35.87,agro-pastoral,0.45,1.1,1,0,A00
+Narok,Narok South,-1.43,35.65,pastoral,0.3,1.2,0,0,A01
+Narok,Narok East,-1.2,36.2,pastoral,0.35,1.0,1,0,A02
+Narok,Narok West,-1.5,35.2,pastoral,0.25,1.1,0,1,A03
+Narok,Transmara West,-1.0,34.88,mixed,0.5,1.3,0,1,A04
+Narok,Transmara East,-1.2,35.05,mixed,0.45,1.2,0,0,A05
+Kajiado,Kajiado Central,-1.85,36.78,pastoral,0.4,0.9,1,0,A06
+Kajiado,Kajiado North,-1.36,36.66,peri-urban,0.6,0.8,1,0,A07
+Kajiado,Kajiado East,-1.55,36.95,pastoral,0.45,0.8,0,0,A08
+Kajiado,Kajiado West,-1.9,36.3,pastoral,0.25,0.7,0,0,A09
+Kajiado,Loitokitok,-2.93,37.51,pastoral,0.3,0.9,1,1,A10
+Nakuru,Naivasha,-0.72,36.43,mixed,0.6,1.0,1,0,A11
+Nakuru,Gilgil,-0.5,36.32,mixed,0.6,1.0,0,0,A12
+Nakuru,Molo,-0.25,35.73,mixed,0.65,1.2,0,0,A13
+Nakuru,Njoro,-0.33,35.94,mixed,0.65,1.1,0,0,A14
+Nakuru,Rongai,-0.17,35.86,mixed,0.6,1.0,1,0,A15
+Laikipia,Laikipia East,0.01,37.07,mixed,0.55,0.9,1,0,A16
+Laikipia,Laikipia West,0.27,36.54,agro-pastoral,0.45,1.0,0,0,A17
+Laikipia,Laikipia North,0.4,37.15,pastoral,0.25,0.8,0,0,A18
+Isiolo,Isiolo,0.35,37.58,pastoral,0.4,0.8,1,0,A19
+Isiolo,Garbatulla,0.53,38.52,pastoral,0.2,0.7,0,0,A20
+Isiolo,Merti,1.07,38.67,pastoral,0.15,0.6,0,0,A21
+Garissa,Garissa Township,-0.45,39.65,pastoral,0.45,0.9,1,0,A22
+Garissa,Dadaab,0.06,40.31,pastoral,0.2,0.8,0,1,A23
+Garissa,Fafi,-0.9,40.1,pastoral,0.15,0.7,0,1,A24
+Garissa,Ijara,-1.6,40.52,pastoral,0.2,0.7,0,1,A25
+Garissa,Lagdera,0.74,39.18,pastoral,0.15,0.6,0,0,A26
+Garissa,Balambala,-0.04,39.33,pastoral,0.2,0.7,0,0,A27
