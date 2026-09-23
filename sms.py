@@ -2,7 +2,8 @@
 Livestock Sentinel AI - understanding farmer SMS reports (Swahili, English, mixed)
 
 Two engines:
-  * AI engine  : a Claude language model extracts structured data (used when an API key is set).
+  * AI engine  : a language model (Google Gemini free tier, or Claude) extracts structured data
+                 when an API key is set.
   * Fallback   : a transparent keyword matcher, so the demo still works without a key.
 Every report gets a confidence level. Unclear reports go to a human review queue.
 The system never diagnoses: it flags "possible FMD signs" for a vet to verify.
@@ -105,13 +106,29 @@ Return ONLY a JSON object, no other text, with these keys:
 Do not diagnose disease. Message: \"\"\"{msg}\"\"\""""
 
 
-def parse_ai(text, registered_area, area_names, api_key, model="claude-haiku-4-5-20251001"):
+def _call_claude(prompt, key, model="claude-haiku-4-5-20251001"):
     resp = requests.post("https://api.anthropic.com/v1/messages", timeout=30, headers={
-        "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-        json={"model": model, "max_tokens": 400, "messages": [{"role": "user", "content": PROMPT.format(
-            reg=registered_area, areas=", ".join(area_names), labels=", ".join(SYMPTOMS), msg=text)}]})
+        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        json={"model": model, "max_tokens": 400, "messages": [{"role": "user", "content": prompt}]})
     resp.raise_for_status()
-    raw = "".join(b.get("text", "") for b in resp.json()["content"])
+    return "".join(b.get("text", "") for b in resp.json()["content"])
+
+
+def _call_gemini(prompt, key, model="gemini-2.5-flash-lite"):
+    resp = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                         params={"key": key}, timeout=30,
+                         json={"contents": [{"parts": [{"text": prompt}]}],
+                               "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}})
+    resp.raise_for_status()
+    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def parse_ai(text, registered_area, area_names, provider, key, model=None):
+    prompt = PROMPT.format(reg=registered_area, areas=", ".join(area_names), labels=", ".join(SYMPTOMS), msg=text)
+    if provider == "gemini":
+        raw = _call_gemini(prompt, key, model or "gemini-2.5-flash-lite")
+    else:
+        raw = _call_claude(prompt, key, model or "claude-haiku-4-5-20251001")
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     r = json.loads(raw)
     r["symptoms"] = [s for s in r.get("symptoms", []) if s in SYMPTOMS]
@@ -120,14 +137,14 @@ def parse_ai(text, registered_area, area_names, api_key, model="claude-haiku-4-5
     r["species"] = r.get("species", "unknown")
     r["language"] = r.get("language", "en")
     r["fmd_signs"] = r.get("fmd_signs", "none")
-    r["engine"] = "AI (Claude)"
+    r["engine"] = "AI (Google Gemini)" if provider == "gemini" else "AI (Claude)"
     return review_rules(r)
 
 
-def parse(text, registered_area, area_names, api_key=None):
-    if api_key:
+def parse(text, registered_area, area_names, provider=None, key=None, model=None):
+    if provider and key:
         try:
-            return parse_ai(text, registered_area, area_names, api_key)
+            return parse_ai(text, registered_area, area_names, provider, key, model)
         except Exception as e:  # fall back rather than fail in front of a user
             r = parse_fallback(text, registered_area, area_names)
             r["engine"] = f"keyword fallback (AI unavailable: {type(e).__name__})"

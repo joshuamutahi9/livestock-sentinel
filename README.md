@@ -55,11 +55,14 @@ python impact.py   # about 2 minutes
 
 ## Switching on the AI language engine
 
-Farmer SMS understanding uses a Claude model when an Anthropic API key is available; otherwise a keyword fallback runs.
-On Streamlit Community Cloud: app menu → Settings → Secrets, and add:
+Farmer SMS understanding uses a language model when an API key is available; otherwise a keyword fallback runs.
+The free option is Google Gemini (free tier from Google AI Studio, no card needed). On Streamlit Community Cloud:
+app menu → Settings → Secrets, and add:
 
 ```
-ANTHROPIC_API_KEY = "your-key-here"
+GEMINI_API_KEY = "your-key-here"
 ```
 
-Never put the key in the code or commit it to GitHub.
+A Claude key (`ANTHROPIC_API_KEY`) also works. Never put a key in the code or commit it to GitHub.
+Note: on Google's free tier, message content may be used by Google to improve its products, so the free tier
+is suitable for simulated demo messages only, not real farmer data.

@@ -166,20 +166,29 @@ with tab_alerts:
 
 with tab_sms:
     st.subheader("Farmer reports by SMS")
-    api_key = None
+    provider, api_key, llm_model = None, None, None
     try:
-        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+        if st.secrets.get("GEMINI_API_KEY"):
+            provider, api_key, llm_model = "gemini", st.secrets["GEMINI_API_KEY"], st.secrets.get("GEMINI_MODEL")
+        elif st.secrets.get("ANTHROPIC_API_KEY"):
+            provider, api_key = "claude", st.secrets["ANTHROPIC_API_KEY"]
     except Exception:
-        api_key = None
+        pass
     st.caption("Farmers text what they see, in Swahili, English or a mix. The AI turns each message into structured data, "
                "replies to the farmer, and sends unclear reports to a person to check. It flags possible signs; it does not diagnose.")
-    st.markdown(f"Language engine: **{'AI (Claude language model)' if api_key else 'keyword fallback (add an API key to switch on the AI engine)'}**")
+    engine_name = {"gemini": "AI (Google Gemini language model)", "claude": "AI (Claude language model)"}.get(
+        provider, "keyword fallback (add an API key to switch on the AI engine)")
+    st.markdown(f"Language engine: **{engine_name}**")
     if "sms_reports" not in st.session_state:
         st.session_state.sms_reports = []
     names = areas.sub_county.tolist()
 
+    @st.cache_data(show_spinner="Reading the message...", max_entries=500)
+    def understand(text, reg, provider, _key, model):
+        return sms.parse(text, reg, names, provider, _key, model)
+
     def process(phone, reg, text):
-        r = sms.parse(text, reg, names, api_key)
+        r = dict(understand(text, reg, provider, api_key, llm_model))
         r.update(phone=phone, registered=reg, text=text, status="Needs review" if r["needs_review"] else "Accepted")
         st.session_state.sms_reports.insert(0, r)
 
